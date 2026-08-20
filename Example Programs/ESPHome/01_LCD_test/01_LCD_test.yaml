@@ -1,0 +1,118 @@
+substitutions:
+  name: onx2424g013-01-lcd-test
+  friendly_name: ONX2424G013 01 LCD Test
+  # Orientation defaults for the ONX2424G013 mounted LCD.
+  lcd_mirror_x: "true"
+  lcd_mirror_y: "false"
+  lcd_swap_xy: "false"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_SPIRAM: y
+      CONFIG_SPIRAM_MODE_OCT: y
+      CONFIG_SPIRAM_SPEED_80M: y
+
+logger:
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+spi:
+  id: lcd_spi
+  clk_pin: GPIO5
+  mosi_pin: GPIO1
+
+output:
+  - platform: ledc
+    id: lcd_backlight_pwm
+    pin: GPIO6
+    # 25 kHz avoids the viewing-angle stripe artifact seen with lower PWM rates.
+    frequency: 25000Hz
+
+light:
+  - platform: monochromatic
+    id: lcd_backlight
+    name: LCD Backlight
+    output: lcd_backlight_pwm
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+
+display:
+  - platform: ili9xxx
+    id: lcd_display
+    model: GC9A01A
+    spi_id: lcd_spi
+    cs_pin: GPIO2
+    dc_pin: GPIO3
+    reset_pin: GPIO8
+    dimensions:
+      width: 240
+      height: 240
+    data_rate: 40MHz
+    color_order: bgr
+    invert_colors: true
+    transform:
+      mirror_x: ${lcd_mirror_x}
+      mirror_y: ${lcd_mirror_y}
+      swap_xy: ${lcd_swap_xy}
+    # LVGL owns the full UI refresh path, so the display driver must not clear periodically.
+    auto_clear_enabled: false
+    update_interval: never
+
+binary_sensor:
+  - platform: gpio
+    id: key_button
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      # Match the ESP-IDF keypad debounce timing.
+      - delayed_on: 25ms
+      - delayed_off: 25ms
+
+lvgl:
+  displays:
+    - lcd_display
+  # Route the physical KEY through LVGL keypad ENTER so press/click behavior is native LVGL.
+  keypads:
+    - enter: key_button
+  pages:
+    - id: main_page
+      bg_color: 0x101820
+      widgets:
+        - label:
+            text: LCD_test
+            text_color: 0xFFFFFF
+            align: CENTER
+            y: -42
+            text_font: montserrat_28
+        - button:
+            id: confirm_button
+            width: 118
+            height: 46
+            align: CENTER
+            y: 32
+            # Give the only button focus so KEY/ENTER acts on it immediately after boot.
+            on_boot:
+              - lvgl.widget.focus: confirm_button
+            on_click:
+              then:
+                - lvgl.label.update:
+                    id: confirm_label
+                    text: KEY OK
+            widgets:
+              - label:
+                  id: confirm_label
+                  text: Confirm
+                  align: CENTER

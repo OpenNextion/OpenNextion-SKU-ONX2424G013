@@ -1,0 +1,222 @@
+substitutions:
+  name: onx2424g013-03-wifi-test
+  friendly_name: ONX2424G013 03 WiFi Test
+  # Orientation defaults for the ONX2424G013 mounted LCD.
+  lcd_mirror_x: "true"
+  lcd_mirror_y: "false"
+  lcd_swap_xy: "false"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - light.turn_on:
+          id: lcd_backlight
+          brightness: 100%
+      - script.execute: update_wifi_ui
+
+external_components:
+  # Keep the WiFi portal as a local ESPHome component so ESPHome owns the
+  # component lifecycle while the implementation can still mirror ESP-IDF 03.
+  - source:
+      type: local
+      path: components
+    components:
+      - wifi_portal
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    advanced:
+      # The custom portal still uses ESP-IDF's HTTP server and DHCP captive
+      # portal options while ESPHome owns the WiFi driver state.
+      enable_lwip_dhcp_server: true
+      include_builtin_idf_components:
+        - esp_http_server
+    sdkconfig_options:
+      CONFIG_SPIRAM: y
+      CONFIG_SPIRAM_MODE_OCT: y
+      CONFIG_SPIRAM_SPEED_80M: y
+
+logger:
+
+network:
+  enable_ipv6: false
+
+wifi:
+  # Use ESPHome's WiFi component so network::is_connected(), mDNS, and Native
+  # API all see the real STA state after the portal submits credentials.
+  ap:
+    ssid: "ONX2424G013"
+    ap_timeout: 0s
+  reboot_timeout: 0s
+  power_save_mode: none
+
+# Enable Home Assistant auto-discovery through ESPHome Native API.
+# No encryption key or password is configured, so Home Assistant can add it
+# without an API key after the device joins the local WiFi.
+api:
+  reboot_timeout: 0s
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+globals:
+  - id: ui_ssid
+    type: std::string
+    initial_value: '"AP: ONX2424G013"'
+  - id: ui_status
+    type: std::string
+    initial_value: '"Connect phone to AP"'
+  - id: ui_ip
+    type: std::string
+    initial_value: '"Open: 192.168.4.1"'
+  - id: ui_hint
+    type: std::string
+    initial_value: '"No password\nPopup/browser\n192.168.4.1"'
+  - id: portal_selected_ssid
+    type: std::string
+    initial_value: '""'
+  - id: portal_status
+    type: std::string
+    initial_value: '"Waiting"'
+  - id: portal_ip
+    type: std::string
+    initial_value: '""'
+
+wifi_portal:
+  # The component updates these globals from its ESP-IDF WiFi event and HTTP
+  # handlers; the LVGL script below pulls them into the screen labels.
+  id: wifi_portal_component
+  ui_ssid: ui_ssid
+  ui_status: ui_status
+  ui_ip: ui_ip
+  ui_hint: ui_hint
+  selected_ssid: portal_selected_ssid
+  connection_status: portal_status
+  sta_ip: portal_ip
+
+spi:
+  id: lcd_spi
+  clk_pin: GPIO5
+  mosi_pin: GPIO1
+
+output:
+  - platform: ledc
+    id: lcd_backlight_pwm
+    pin: GPIO6
+    # Keep the same 25 kHz backlight PWM used by the verified 01/02 examples.
+    frequency: 25000Hz
+
+light:
+  - platform: monochromatic
+    id: lcd_backlight
+    name: LCD Backlight
+    output: lcd_backlight_pwm
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+
+display:
+  - platform: ili9xxx
+    id: lcd_display
+    model: GC9A01A
+    spi_id: lcd_spi
+    cs_pin: GPIO2
+    dc_pin: GPIO3
+    reset_pin: GPIO8
+    dimensions:
+      width: 240
+      height: 240
+    data_rate: 40MHz
+    color_order: bgr
+    invert_colors: true
+    transform:
+      mirror_x: ${lcd_mirror_x}
+      mirror_y: ${lcd_mirror_y}
+      swap_xy: ${lcd_swap_xy}
+    # LVGL owns the full UI refresh path, so the display driver must not clear periodically.
+    auto_clear_enabled: false
+    update_interval: never
+
+script:
+  - id: update_wifi_ui
+    mode: restart
+    then:
+      # Keep all LCD text updates inside ESPHome/LVGL instead of touching LVGL
+      # objects directly from the HTTP server task.
+      - lvgl.label.update:
+          id: ssid_label
+          text: !lambda "return id(ui_ssid).c_str();"
+      - lvgl.label.update:
+          id: status_label
+          text: !lambda "return id(ui_status).c_str();"
+      - lvgl.label.update:
+          id: ip_label
+          text: !lambda "return id(ui_ip).c_str();"
+      - lvgl.label.update:
+          id: hint_label
+          text: !lambda "return id(ui_hint).c_str();"
+
+interval:
+  - interval: 250ms
+    then:
+      - script.execute: update_wifi_ui
+
+lvgl:
+  displays:
+    - lcd_display
+  default_font: montserrat_14
+  pages:
+    - id: main_page
+      bg_color: 0x101820
+      widgets:
+        - label:
+            id: title_label
+            text: "WiFi_test"
+            text_color: 0xFFFFFF
+            text_font: montserrat_28
+            align: CENTER
+            y: -80
+        - label:
+            id: ssid_label
+            width: 210
+            text: "AP: ONX2424G013"
+            text_color: 0x46C2FF
+            text_font: montserrat_14
+            text_align: CENTER
+            align: CENTER
+            y: -36
+        - label:
+            id: status_label
+            width: 210
+            text: "Connect phone to AP"
+            text_color: 0xFFFFFF
+            text_font: montserrat_14
+            text_align: CENTER
+            align: CENTER
+            y: -6
+        - label:
+            id: ip_label
+            width: 210
+            text: "Open: 192.168.4.1"
+            text_color: 0xF7C948
+            text_font: montserrat_14
+            text_align: CENTER
+            align: CENTER
+            y: 26
+        - label:
+            id: hint_label
+            width: 150
+            text: "No password\nPopup/browser\n192.168.4.1"
+            text_color: 0xB9C2CF
+            text_font: montserrat_14
+            text_align: CENTER
+            text_line_space: 2
+            align: CENTER
+            y: 66

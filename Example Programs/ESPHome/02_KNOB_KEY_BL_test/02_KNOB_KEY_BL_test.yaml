@@ -1,0 +1,224 @@
+substitutions:
+  name: onx2424g013-02-knob-key-bl-test
+  friendly_name: ONX2424G013 02 KNOB KEY BL Test
+  # Orientation defaults for the ONX2424G013 mounted LCD.
+  lcd_mirror_x: "true"
+  lcd_mirror_y: "false"
+  lcd_swap_xy: "false"
+  # Encoder sensitivity presets for knob_edges_per_brightness_step:
+  # high: "1", medium: "2", low: "4".
+  # Default is medium.
+  knob_edges_per_brightness_step: "2"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - light.turn_on:
+          id: lcd_backlight
+          brightness: 100%
+      - script.execute: update_brightness_ui
+
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_SPIRAM: y
+      CONFIG_SPIRAM_MODE_OCT: y
+      CONFIG_SPIRAM_SPEED_80M: y
+
+logger:
+
+psram:
+  mode: octal
+  speed: 80MHz
+
+globals:
+  - id: current_brightness
+    type: int
+    initial_value: "100"
+  - id: target_brightness
+    type: int
+    initial_value: "100"
+  - id: knob_edge_accum
+    type: int
+    initial_value: "0"
+
+spi:
+  id: lcd_spi
+  clk_pin: GPIO5
+  mosi_pin: GPIO1
+
+output:
+  - platform: ledc
+    id: lcd_backlight_pwm
+    pin: GPIO6
+    # 25 kHz avoids the viewing-angle stripe artifact seen with lower PWM rates.
+    frequency: 25000Hz
+
+light:
+  - platform: monochromatic
+    id: lcd_backlight
+    name: LCD Backlight
+    output: lcd_backlight_pwm
+    # Keep ESPHome's default gamma_correct value of 2.8 so brightness percentages
+    # visually match the ESP-IDF and ESP-Arduino examples.
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+
+display:
+  - platform: ili9xxx
+    id: lcd_display
+    model: GC9A01A
+    spi_id: lcd_spi
+    cs_pin: GPIO2
+    dc_pin: GPIO3
+    reset_pin: GPIO8
+    dimensions:
+      width: 240
+      height: 240
+    data_rate: 40MHz
+    color_order: bgr
+    invert_colors: true
+    transform:
+      mirror_x: ${lcd_mirror_x}
+      mirror_y: ${lcd_mirror_y}
+      swap_xy: ${lcd_swap_xy}
+    # LVGL owns the full UI refresh path, so the display driver must not clear periodically.
+    auto_clear_enabled: false
+    update_interval: never
+
+script:
+  - id: update_brightness_ui
+    mode: restart
+    then:
+      - lvgl.arc.update:
+          id: brightness_arc
+          value: !lambda "return id(target_brightness);"
+      - lvgl.label.update:
+          id: current_label
+          text:
+            format: "Current\n%d%%"
+            args: ["id(current_brightness)"]
+      - lvgl.label.update:
+          id: target_label
+          text:
+            format: "Target\n%d%%"
+            args: ["id(target_brightness)"]
+
+  - id: change_target_brightness
+    mode: restart
+    parameters:
+      direction: int
+    then:
+      - lambda: |-
+          id(knob_edge_accum) += direction;
+          while (id(knob_edge_accum) >= ${knob_edges_per_brightness_step}) {
+            id(target_brightness) = std::min(100, id(target_brightness) + 1);
+            id(knob_edge_accum) -= ${knob_edges_per_brightness_step};
+          }
+          while (id(knob_edge_accum) <= -${knob_edges_per_brightness_step}) {
+            id(target_brightness) = std::max(10, id(target_brightness) - 1);
+            id(knob_edge_accum) += ${knob_edges_per_brightness_step};
+          }
+      - script.execute: update_brightness_ui
+
+  - id: apply_target_brightness
+    mode: restart
+    then:
+      - lambda: |-
+          id(current_brightness) = id(target_brightness);
+      - light.turn_on:
+          id: lcd_backlight
+          brightness: !lambda "return id(current_brightness) / 100.0f;"
+      - script.execute: update_brightness_ui
+
+binary_sensor:
+  - platform: gpio
+    id: key_button
+    pin:
+      number: GPIO9
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      # Match the ESP-IDF keypad debounce timing.
+      - delayed_on: 25ms
+      - delayed_off: 25ms
+    on_click:
+      min_length: 20ms
+      max_length: 600ms
+      then:
+        - script.execute: apply_target_brightness
+
+sensor:
+  - platform: rotary_encoder
+    id: knob_encoder
+    pin_a:
+      number: GPIO48
+      mode: INPUT_PULLUP
+    pin_b:
+      number: GPIO47
+      mode: INPUT_PULLUP
+    resolution: 4
+    restore_mode: ALWAYS_ZERO
+    on_clockwise:
+      then:
+        - script.execute:
+            id: change_target_brightness
+            direction: 1
+    on_anticlockwise:
+      then:
+        - script.execute:
+            id: change_target_brightness
+            direction: -1
+
+lvgl:
+  displays:
+    - lcd_display
+  default_font: montserrat_14
+  pages:
+    - id: main_page
+      bg_color: 0x101820
+      widgets:
+        - arc:
+            id: brightness_arc
+            width: 220
+            height: 220
+            align: CENTER
+            # The user-facing brightness range is 10-100. The backlight can still
+            # be turned off internally by ESPHome during boot if needed.
+            min_value: 10
+            max_value: 100
+            value: 100
+            adjustable: false
+            arc_width: 12
+            arc_color: 0x2A3441
+            arc_rounded: true
+            indicator:
+              arc_width: 12
+              arc_color: 0x46C2FF
+              arc_rounded: true
+            widgets:
+              - label:
+                  id: current_label
+                  text: "Current\n100%"
+                  text_color: 0xFFFFFF
+                  text_font: montserrat_14
+                  text_align: CENTER
+                  text_line_space: 4
+                  align: CENTER
+                  y: -26
+              - label:
+                  id: target_label
+                  text: "Target\n100%"
+                  text_color: 0x46C2FF
+                  text_font: montserrat_14
+                  text_align: CENTER
+                  text_line_space: 4
+                  align: CENTER
+                  y: 34
